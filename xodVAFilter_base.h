@@ -15,11 +15,11 @@
 //
 // *===========================================================================* //
 
+#ifndef __XODVAFILTER_BASE_H__
+#define __XODVAFILTER_BASE_H__
+
+
 #include <math.h>
-
-
-#ifndef __ODMKVAFILTER_BASE_H__
-#define __ODMKVAFILTER_BASE_H__
 
 
 
@@ -131,4 +131,4 @@ public:
 
 
 
-#endif // __ODMKVAFILTER_BASE_H__
+#endif // __XODVAFILTER_BASE_H__

@@ -14,15 +14,23 @@
 //	Revision History: Mar 10, 2020 - current
 //
 // *===========================================================================* //
+//
+//	compiling (GCC): 
+//	g++ -Wall -o xodVAFilter xodVAFilter_test.cpp xodVAFilter_base.cpp xodVAFilter.cpp
+//
+//
+//
+//
+// *===========================================================================* //
 
 
 #include <iostream>
 #include <cmath>
-#include <string>
 #include <vector>
 #include <cstdint>
 
 #include "xodVAFilter_base.h"
+#include "xodVAFilter.h"
 
 using namespace std;
 
@@ -31,29 +39,36 @@ using namespace std;
 // *---------------------------------------------------------------------------* //
 // *--- user settings ---* //
 
-
-//const int FRAME_LENGTH = 200;
-
 // SOURCE_TYPE: 1 = impulse, 2 = step, 3 = rand
 //const int SOURCE_TYPE = 3;
 
 //double noise = .001;    // amount of noise [0 <-> 1] - needs more characterization
 
 
+struct fParamTB_t {
+	float K;
+	float alpha0;
+	float alpha;
+	float beta1;
+	float beta2;
+	float beta3;
+	float beta4;
+};
+
+
 struct UserParam {
-	string    dataPath;		// path to data directory ; (default ./data)
-	string    type;			// filter type: 'LP', 'HP', 'LPHP', 'AP' ;  (default LP)
+	string    dataPath;			// path to data directory ; (default ./data)
+	string    type;				// filter type: 'LP', 'HP', 'LPHP', 'AP' ;  (default LP)
 	uint32_t  numSamples;		// signal test length: n - number of samples of test ; (default 200)
 	uint16_t  sampleRate;		// filter sample rate: n ; (default 48000)
-	uint16_t  cutoff;		// filter cutoff frequency: n ; (default 777)
-	uint16_t  srcType;		// SOURCE_TYPE: 1 = impulse, 2 = step, 3 = rand ; (default rand)
+	float  cutoff;				// filter cutoff frequency: n ; (default 777)
+	float  resonance;		    // filter resonance: n ; (default 1.0)
+	uint16_t  srcType;			// SOURCE_TYPE: 1 = impulse, 2 = step, 3 = rand ; (default rand)
 };
 
 
 // *---------------------------------------------------------------------------* //
-///// ARM software function /////////////////////
-
-// Slow floating-point calculations intended to run in ARM, PS side of SoC
+///// Calculate prewarp & 'big G' (Zavalishin p46) /////////////////////
 
 float onePoleTPT_G(float sampleRate, float cutoff) {
 
@@ -65,7 +80,6 @@ float onePoleTPT_G(float sampleRate, float cutoff) {
 	float wa = (2/T)*tan(wd*T/2);
 	float g = wa*T/2;
 
-	// calculate big G value - Zavalishin p46 (the Art of VA Design)
 	G = g/(1.0 + g);
 
 	return G;
@@ -83,12 +97,11 @@ void printParam(UserParam& param) {
          << "  Number of Samples:    " << param.numSamples										<< endl
          << "  Sample Rate:          " << param.sampleRate						                << endl
          << "  Cutoff Freq:          " << param.cutoff   						                << endl
+         << "  Resonance:            " << param.resonance   					                << endl
          << "  Test Source Type:     " << param.srcType  						                << endl
          << endl;
 }
 
-
-// ** FIXIT - add source type ctrl, sample rate, sample length, optional consule print
 
 void help(UserParam& param) {
     cout << "\n__::(( xodVAFilter Base Test ))::__\n"
@@ -103,9 +116,11 @@ void help(UserParam& param) {
          << "                        - 'HP'   : Highpass Filter\n"
          << "                        - 'LPHP' : Lowpass + Highpass Filter (dual outputs)\n"
          << "                        - 'AP'   : Allpass Filter\n"
+         << "                        - 'ML4P' : Moog Ladder 4-Pole Filter\n"
          << "  -n    <uint32_t>     Number of Samples (test length)\n"
-         << "  -r    <uint16_t>     Sample Rate\n"
-         << "  -c    <uint16_t>     Cutoff Frequency\n"
+         << "  -sr   <uint16_t>     Sample Rate\n"
+         << "  -c    <float>        Cutoff Frequency\n"
+         << "  -r    <float>        Resonance\n"
          << "  -s    <uint16_t>     Test Source Type\n"
          << endl;
     printParam(param);
@@ -127,9 +142,10 @@ int main(int argc, char *argv[])
 	UserParam param;
     param.dataPath          = "./data/";
     param.type        	 	= "LP";
-    param.numSamples		= 200;
+    param.numSamples		= 1000;
     param.sampleRate		= 48000;
     param.cutoff    		= 777;
+    param.resonance    		= 1.0;
     param.srcType 			= 3;
 
     vector<string> args;
@@ -153,12 +169,16 @@ int main(int argc, char *argv[])
             param.numSamples = atof(args[++i].c_str());
             continue;
         }
-        if ( args[i] == "-r" && i+1 < args.size() ) {
+        if ( args[i] == "-sr" && i+1 < args.size() ) {
             param.sampleRate = atof(args[++i].c_str());
             continue;
         }
         if ( args[i] == "-c" && i+1 < args.size() ) {
             param.cutoff = atof(args[++i].c_str());
+            continue;
+        }
+        if ( args[i] == "-r" && i+1 < args.size() ) {
+            param.resonance = atof(args[++i].c_str());
             continue;
         }
         if ( args[i] == "-s" && i+1 < args.size() ) {
@@ -434,6 +454,53 @@ int main(int argc, char *argv[])
 		// avg_error_HP = error_HP/param.numSamples;
 		// cout<<"average error_HP  = "<<avg_error_HP<<endl;
 
+
+		cout<<endl<<"***** Test complete *****"<<endl;
+		return 0;
+
+	}
+
+		if(param.type == "ML4P") {
+
+		// *---------------------------------------------------------------------------* //
+		cout << "__(( test Stereo Moog Ladder 4-pole Filter ))__" << endl;
+
+		printParam(param);
+
+		FILE *f_ML4P_In, *f_ML4P_Out;
+
+		float ynML4P[param.numSamples];
+
+		xodMoogLadder4P MoogL4p;
+
+		MoogL4p.initialize(param.sampleRate);
+		MoogL4p.setFcAndRes(param.cutoff, param.resonance, param.sampleRate);
+
+
+		for (uint32_t i = 0; i < param.numSamples; i++) {
+			MoogL4p.advance(xn[i], ynML4P[i]);
+		}
+
+
+		// write reference filter results
+
+		string moogL4p_in = "moogL4p_in.dat";
+		string moogL4p_inDir = param.dataPath + moogL4p_in;
+
+		string moogL4p_out = "moogL4p_ref_out.dat";
+		string moogL4p_outDir = param.dataPath + moogL4p_out;
+
+		f_ML4P_In=fopen(moogL4p_inDir.c_str(),"w");
+		f_ML4P_Out=fopen(moogL4p_outDir.c_str(),"w");
+
+
+		for (uint32_t i=0;i<param.numSamples;i++) {
+			fprintf(f_ML4P_In,"%10.7f\n", xn[i]);
+			fprintf(f_ML4P_Out,"%10.7f\n", ynML4P[i]);
+		}
+
+		fclose(f_ML4P_In);
+		fclose(f_ML4P_Out);
 
 		cout<<endl<<"***** Test complete *****"<<endl;
 		return 0;
